@@ -242,6 +242,7 @@ class ThermostatTpi(ClimateEntity, RestoreEntity):
         self._reverse_action = reverse_action
         self._attr_temperature_unit = unit
         self._attr_unique_id = unique_id
+        self._last_on_time = None
         self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
         self._control_heating_off_call_later = None
         self._stop_control_loop = None
@@ -532,6 +533,13 @@ class ThermostatTpi(ClimateEntity, RestoreEntity):
                 await self._async_heater_turn_off()
                 return
 
+            # Vérification du temps minimum entre deux lancements
+            if self._temps_min > 1 and self._last_on_time is not None:
+                diff = (datetime.now() - self._last_on_time).total_seconds()
+                if diff < self._temps_min:
+                    _LOGGER.info("Attente de %s secondes avant relance (écoulé: %s)", self._temps_min, round(diff))
+                    return
+
             heating_delay = self._cur_power * round(self.eval_time / 100, 2)
 
             if self._temps_min > -1 and heating_delay < self._temps_min:
@@ -540,6 +548,7 @@ class ThermostatTpi(ClimateEntity, RestoreEntity):
             _LOGGER.info("Turning on heater %s", self.heater_entity_id)
             ## forcer le switch
             await self._async_heater_turn_on()
+            self._last_on_time = datetime.now()
 
             _LOGGER.info("Waiting for %s before turning it down", heating_delay)
             # Stop callback if it was already existing
