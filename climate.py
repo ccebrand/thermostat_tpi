@@ -242,7 +242,7 @@ class ThermostatTpi(ClimateEntity, RestoreEntity):
         self._reverse_action = reverse_action
         self._attr_temperature_unit = unit
         self._attr_unique_id = unique_id
-        self._last_on_time = None
+        self._last_off_time = None
         self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
         self._control_heating_off_call_later = None
         self._stop_control_loop = None
@@ -533,24 +533,27 @@ class ThermostatTpi(ClimateEntity, RestoreEntity):
                 await self._async_heater_turn_off()
                 return
 
-            # Vérification du temps minimum entre deux lancements
-            if self._temps_min > 1 and self._last_on_time is not None:
-                diff = (datetime.now() - self._last_on_time).total_seconds()
-                if diff < self._temps_min:
-                    _LOGGER.info("Attente de %s secondes avant relance (écoulé: %s)", self._temps_min, round(diff))
+            # Vérification du temps minimum entre l'arrêt et le prochain lancement
+            if self._temps_min > 1 and self._last_off_time is not None:
+                time_since_off = (datetime.now() - self._last_off_time).total_seconds()
+                if time_since_off < self._temps_min:
+                    remaining = self._temps_min - time_since_off
+                    _LOGGER.info(
+                        "Attente de %s secondes après arrêt avant relance (écoulé: %s, restant: %s)",
+                        self._temps_min, round(time_since_off), round(remaining)
+                    )
                     return
 
             heating_delay = self._cur_power * round(self.eval_time / 100, 2)
 
+            # Forcer le temps de chauffe minimum pour les poêles à granulés
             if self._temps_min > -1 and heating_delay < self._temps_min:
                 heating_delay = self._temps_min
 
             _LOGGER.info("Turning on heater %s", self.heater_entity_id)
-            ## forcer le switch
             await self._async_heater_turn_on()
-            self._last_on_time = datetime.now()
 
-            _LOGGER.info("Waiting for %s before turning it down", heating_delay)
+            _LOGGER.info("Waiting for %s seconds before turning it down", heating_delay)
             # Stop callback if it was already existing
             if self._control_heating_off_call_later:
                 self._control_heating_off_call_later()
@@ -560,8 +563,23 @@ class ThermostatTpi(ClimateEntity, RestoreEntity):
 
             self.async_on_remove(self._control_heating_off_call_later)
 
-    async def _async_control_heating_off_cb(self):
+    async def _async_control_heating_off_cb(self, _time=None):
         """Callback called after heating time to stop heating."""
+        # Recalculer la puissance pour vérifier si on doit continuer
+        self._async_update_power()
+
+        # Si la puissance est toujours nécessaire et temps_min est configuré,
+        # ne pas éteindre pour éviter un arrêt/redémarrage immédiat
+        if self._temps_min > 1 and self._cur_power > 0:
+            _LOGGER.info(
+                "Fin du délai de chauffe mais puissance toujours requise (%s%%). "
+                "Passage au prochain cycle sans arrêt pour éviter cycle court",
+                round(self._cur_power)
+            )
+            # Relancer un cycle de chauffage sans éteindre
+            await self._async_control_heating()
+            return
+
         _LOGGER.info("Turning heater to eco mode to cool off %s", self.heater_entity_id)
         await self._async_heater_turn_off()
 
@@ -590,6 +608,8 @@ class ThermostatTpi(ClimateEntity, RestoreEntity):
         await self.hass.services.async_call(
             HA_DOMAIN, action, data, context=self._context
         )
+        # Enregistrer l'heure d'arrêt pour respecter le temps minimum entre cycles
+        self._last_off_time = datetime.now()
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set new preset mode."""
