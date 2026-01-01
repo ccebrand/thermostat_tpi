@@ -530,7 +530,10 @@ class ThermostatTpi(ClimateEntity, RestoreEntity):
             _LOGGER.info("Current power %s", self._cur_power)
 
             if not self._cur_power:
-                await self._async_heater_turn_off()
+                _LOGGER.debug("Power is 0, turning off heater")
+                # Ne pas éteindre si déjà éteint (évite de définir _last_off_time inutilement)
+                if not self._is_device_active:
+                    await self._async_heater_turn_off()
                 return
 
             # Vérification du temps minimum entre l'arrêt et le prochain lancement
